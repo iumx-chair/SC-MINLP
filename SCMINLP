@@ -1,0 +1,126 @@
+#!/usr/local/bin/python3
+
+from sys import path
+# path.insert(1, '/Users/renanspencertrindade/Desktop/zGenericSolver/')
+
+import os
+if not os.path.exists('tmp'):
+    os.mkdir("tmp")
+
+from wrapperc import ASLPY
+from cbreakpoints import BPcalc
+from generic import NLProblem
+from IPOPT_Call import IPOPT_Call
+import Solver_CPLEX
+
+from sys import argv
+
+def main(argv):
+    print("Start")
+
+    mpsNameFile = "tmp/prob.lp"
+    # nltxtNameFile = "tmp/prob.txt"
+    nlNameFile = "tmp/prob.nl"
+
+    asl = ASLPY()
+    ipopt = IPOPT_Call()
+    if (len(argv) > 1):
+        asl.set_argv(argv)
+        ipopt.readFileB(argv[1]+".nl")
+    else:
+        asl.set_argv_fileonly(nlNameFile)
+        ipopt.readFileB(nlNameFile)
+
+    asl.start()
+
+    solver = Solver_CPLEX.getSolver(asl)
+    # cons = getExpress(asl)
+    # return
+    # for c in cons :
+    #     print(c)
+
+    # asl.write_file_lp(mpsNameFile)
+    solver.write(mpsNameFile)
+
+    # with open(mpsNameFile, 'w') as f:
+    #     f.write(asl.get_file_lp())
+
+    # For verification: Export .nld file
+    # with open(nltxtNameFile, 'w') as f:
+    #     f.write(asl.get_file_nl())
+
+    # Solver call
+    reformulationType = 1
+    nlproblem = NLProblem()
+    nlproblem.setIPOPT(ipopt)
+    options = [asl.get_option(i) for i in range(5)]
+    optionsc = asl.get_optionC(0)
+
+    nlproblem.LoadOptions(options)
+
+    bpcalc = BPcalc()
+    if len(optionsc) <= 1:
+        # Breakpoints calculation
+        bpcalc.set_asl(asl)
+        print("\nStarting breakpoints preprocessing...")
+        bpcalc.execute()
+        bpcalc.exportJSON()
+
+        nlproblem.LoadBreakpoints(bpcalc)
+    else:
+        nlproblem.LoadFileJSON(optionsc)
+
+    # Solving step
+    # nlproblem.maxIterations = 0
+    added = 0
+    gap = 100
+    # nlproblem.CreateProblemMPS(mpsNameFile, reformulationType)
+    nlproblem.CreateProblemSolv(solver, reformulationType)
+    nlproblem.cpx.write("tmp/newprob.lp")
+    nlproblem.Solve(2)
+    status = nlproblem.get_Status()
+    nlproblem.fixingLocal()
+    gap = nlproblem.getGlobalGap()
+    # added = nlproblem.refinement2()
+    added = nlproblem.refinementFase()
+    while (status and added and gap >= nlproblem.GLOBAL_GAPTOL and nlproblem.relax != 1):
+        # spmodel.loadLPFile("test.lp")
+        # nlproblem.CreateProblemMPS(mpsNameFile, reformulationType)
+        nlproblem.CreateProblemSolv(solver, reformulationType)        # nlproblem.cpx.write("tmp/newprob2.lp")
+        nlproblem.Solve(2)
+        status = nlproblem.get_Status()
+        nlproblem.fixingLocal()
+        gap = nlproblem.getGlobalGap()
+
+        if (gap < nlproblem.GLOBAL_GAPTOL):
+            break
+
+        # added = nlproblem.refinement2()
+        added = nlproblem.refinementFase()
+    # Write solution
+    if (nlproblem.relax != 1):
+        solution = nlproblem.getSolution()
+    else:
+        solution = nlproblem.getSolutionLB()
+    asl.write_sol(solution)
+
+    # Export summarize
+    with open("summarize.txt", "a") as file_object:
+        file_object.write(str(bpcalc.execute_time) + " " +
+                          str(nlproblem.cpx.solution.get_objective_value()) + " " +
+                          str(nlproblem.totaltime) + " " +
+                          str(nlproblem.cpx.solution.MIP.get_mip_relative_gap()) + " " +
+                          str(nlproblem.cutscount) + " " +
+                          str(nlproblem.iterations) + " " +
+                          str(nlproblem.objValGlobalLB) + " " +
+                          str(nlproblem.objValGlobalUB) + " " +
+                          str(nlproblem.getGlobalGap()) + " " +
+                          nlproblem.cpx.solution.get_status_string() +
+                          "\n")
+
+    print("\nBreakpoints preprocessing time:     %.2f s" % bpcalc.execute_time)
+    print("End")
+
+
+if __name__ == '__main__':
+    main(argv)

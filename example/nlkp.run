@@ -1,0 +1,37 @@
+reset;
+
+#Ampl Configuration
+option pl_linearize 0;
+option presolve 0;
+option substout 0;
+
+model nlkp.mod;
+data  nlkp.dat;
+
+#Suffix definition
+suffix _scmnlp >= 0;
+#User-setting suffixes for input
+for {j in VARS}{
+   let C_def[j]._scmnlp := 1;
+}
+
+option solver "../SCMINLP";
+option SCMINLP_options
+'\
+display     = 4                  \
+pc_fileph1  = tmp/data.json      \
+pc_refmode  = 2                  \
+relax       = 0                  \
+time        = 1800               \
+';
+
+solve;
+
+#param scminlp_sol;
+#let scminlp_sol := Total_Profit;
+
+#option solver ipopt;
+#solve;
+
+#printf "\nObj: %.11f\n", scminlp_sol;
+printf "Obj: %.11f\n", Total_Profit;

@@ -1,0 +1,19 @@
+=== External dependencies
+
+- CPLEX
+ python3 /Applications/CPLEX_Studio1209/python/setup.py install
+
+- SymPy
+ python3 -m pip install sympy
+
+=== Add path
+
+Edit the mac paths file to add the SCMINLP folder:
+ sudo nano /etc/paths
+
+=== Test
+
+To test it, type the command:
+ ./SCMINLP
+
+The solver will load the file "tmp/prob.nl".
