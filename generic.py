@@ -212,6 +212,9 @@ class NLProblem():
         if mode == 2:
             print("\nStarting Multiple Choice Model...")
             self.CreateProblem_MultipleChoiceTest()
+        if mode == 3:
+            print("\nStarting Multiple Choice Model - Incremental...")
+            self.CreateProblem_MultipleChoiceInc()
 
         self.listcplexvarnum = list(range(cpx.variables.get_num()))
         self.listcplexvartypes = cpx.variables.get_types(self.listcplexvarnum)
@@ -326,6 +329,8 @@ class NLProblem():
             self.CreateProblem_Incremental()
         if mode == 2:
             self.CreateProblem_MultipleChoice()
+        if mode == 3:
+            self.CreateProblem_MultipleChoiceInc()
 
         self.listcplexvarnum = list(range(cpx.variables.get_num()))
         self.listcplexvartypes = cpx.variables.get_types(self.listcplexvarnum)
@@ -929,6 +934,241 @@ class NLProblem():
             [0 for s in range(len(self.Lparam[j]))] for j in setVars]
         self.lParamFunc = [[self.NLfunc[j](0) for s in range(
             len(self.Lparam[j]))] for j in setVars]
+
+#MultipleChoice-Incremental reformulation
+    def CreateProblem_MultipleChoiceInc(self):
+        Nitem = self.Nitem
+        # Umax = self.Umax
+        # Cap = self.Cap
+        # weight = self.weight
+        # UBvar = self.UBvar
+        Nb = self.Nb
+        Lparam = self.Lparam
+        Concave = self.Concave
+        Ineq = self.ineq
+
+        cpx = self.cpx
+        varX = self.varX
+        varY = self.varY
+
+        # Sets
+        setVars = list(range(Nitem))
+        setS = [list(range(Nb[j]-1)) for j in setVars]
+
+        setSConcave = [
+            (j, s)
+            for j in setVars for s in setS[j]
+            if int(Concave[j][s]) == 1
+        ]
+
+        setSConvex = [
+            (j, s)
+            for j in setVars for s in setS[j]
+            if int(Concave[j][s]) == -1
+        ]
+
+        setSComplet = [
+            (j, s)
+            for j in setVars for s in setS[j]
+        ]
+
+        self.setVars = setVars
+        self.setS = setS
+        self.setSConcave = setSConcave
+        self.setSConvex = setSConvex
+        self.setSComplet = setSComplet
+
+        # Variables
+        x_ref = [cpx.variables.add(obj=[0] * len(setS[j]),
+                                   # lb=[0] * len(setS[j]), Lparam[j][s+1]
+                                   lb=[-cplex.infinity] * len(setS[j]),
+                                   # ub=[Lparam[j][s+1] for s in setS[j] ],
+                                   ub=[cplex.infinity] * len(setS[j]),
+                                   types=['C'] * len(setS[j]),
+                                   names=['x_ref(%d)(%d)' % (j+1, s+1) for s in setS[j]])
+                 for j in setVars]
+
+        y_ref = [cpx.variables.add(obj=[0] * len(setS[j]),
+                                   lb=[0] * len(setS[j]),
+                                   ub=[1] * len(setS[j]),
+                                   types=['C'] * len(setS[j]),
+                                   names=['y_ref(%d)(%d)' % (j+1, s+1) for s in setS[j]])
+                 for j in setVars]
+
+        self.setVars_WithZ = [j for j in setVars if self.varzid[j] > 0]
+        self.setVars_NoZ = [j for j in setVars if self.varzid[j] <= 0]
+
+        if len(self.setVars_WithZ) > 0:
+            x_ref_bar = [-1] * len(setVars)
+
+            for j in self.setVars_WithZ:
+                x_ref_bar[j] = cpx.variables.add(obj=[0],
+                                                 lb=[0],
+                                                 ub=[Lparam[j][len(
+                                                     setS[j])] - Lparam[j][0]],
+                                                 #ub=[cplex.infinity] ,
+                                                 types=['C'],
+                                                 names=['x_ref_bar(%d)' % (j+1)])[0]
+
+        for j in self.setVars_WithZ:
+            y_ref[j] = list(y_ref[j])
+            cpx.variables.set_types(y_ref[j][0], 'C')
+            cpx.variables.set_upper_bounds(y_ref[j][0], 0)
+            cpx.variables.set_lower_bounds(y_ref[j][0], 0)
+            y_ref[j][0] = self.newVarIndex[self.varzid[j]-1]
+            cpx.order.set(
+                [(y_ref[j][0], 10000, cpx.order.branch_direction.up)])
+
+        y2_ref = [cpx.variables.add(obj=[0] * len(range(Nb[j])),
+                                   lb=[0] * len(range(Nb[j])),
+                                   ub=[1] * len(range(Nb[j])),
+                                   types=['B'] * len(range(Nb[j])),
+                                   names=['y2_ref(%d)(%d)' % (j+1, s+1) for s in range(Nb[j]) ])
+                 for j in setVars]
+        
+        for j in setVars:
+            cpx.variables.set_lower_bounds(y2_ref[j][0], 1)
+            cpx.variables.set_upper_bounds(y2_ref[j][-1], 0)
+
+        z_ref = [cpx.variables.add(obj=[0] * len(setS[j]),
+                                   lb=[-cplex.infinity] * len(setS[j]),
+                                   ub=[cplex.infinity] * len(setS[j]),
+                                   types=['C'] * len(setS[j]),
+                                   names=['z_ref(%d)(%d)' % (j+1, s+1) for s in setS[j]])
+                 for j in setVars]
+
+        self.x_ref = x_ref
+        self.y_ref = y_ref
+        self.z_ref = z_ref
+
+        # (14) {i in VARS, k in Intervals[i]}:
+        #   y_ref[i,k] = y2_ref[i,k] - y2_ref[i,k+1];
+        [cpx.linear_constraints.add(
+            lin_expr=[cplex.SparsePair(
+                [y_ref[j][s]] + [y2_ref[j][s]] + [y2_ref[j][s+1]],
+                [1] + [-1] + [1])],
+            senses=['E'],
+            rhs=[0])
+         for j in setVars for s in range(Nb[j]-1)]
+
+        # Constraints
+        # (15){i in VARS} : 
+        #   x[i] == sum{ k in Intervals[i]} x_ref[i,k];
+        [cpx.linear_constraints.add(
+            lin_expr=[cplex.SparsePair(
+                [varX[j]] + [x_ref[j][k] for k in setS[j]],
+                [1] + [-1] * len([x_ref[j][k] for k in setS[j]]))],
+            senses=['E'],
+            rhs=[0])
+         for j in setVars]
+        
+        # (14) {i in VARS, k in Intervals[i]}:
+        #   y_ref[i,k] >= y_ref[i,k+1];
+        [cpx.linear_constraints.add(
+            lin_expr=[cplex.SparsePair(
+                [y2_ref[j][s]] + [y2_ref[j][s+1]],
+                [1] + [-1])],
+            senses=['G'],
+            rhs=[0])
+         for j in setVars for s in range(Nb[j]-2)]
+
+        # (16) {i in VARS, k in Intervals[i]}:
+	    #   x_ref[i,k] <= y_ref[i,k]*breakpointsL[i,k+1] - y_ref[i,k+1]*breakpointsL[i,k+1]
+        [cpx.linear_constraints.add(
+            lin_expr=[cplex.SparsePair(
+                [x_ref[j][s]] + [y2_ref[j][s]] + [y2_ref[j][s+1]],
+                [1] + [-Lparam[j][s+1]] + [Lparam[j][s+1]])],
+            senses=['L'],
+            rhs=[0])
+         for j in setVars for s in setS[j]]
+
+        # (16) {i in VARS, k in Intervals[i]}:
+        #   x_ref[i,k] >= y_ref[i,k]*breakpointsL[i,k] - y_ref[i,k+1]*breakpointsL[i,k]
+        [cpx.linear_constraints.add(
+            lin_expr=[cplex.SparsePair(
+                [x_ref[j][s]] + [y2_ref[j][s]] + [y2_ref[j][s+1]],
+                [1] + [-Lparam[j][s]] + [Lparam[j][s]])],
+            senses=['G'],
+            rhs=[0])
+         for j in setVars for s in setS[j]]
+
+        # z_ref concave
+        [cpx.linear_constraints.add(
+            lin_expr=[cplex.SparsePair(
+                [z_ref[j][s]] + [x_ref[j][s]] + [y2_ref[j][s]] + [y2_ref[j][s+1]],
+                [1] +
+                [(self.NLfunc[j](Lparam[j][s+1]) - self.NLfunc[j](Lparam[j][s]))/(Lparam[j][s+1]-Lparam[j][s])] +
+                [self.NLfunc[j](Lparam[j][s]) - Lparam[j][s]*((self.NLfunc[j](
+                    Lparam[j][s+1]) - self.NLfunc[j](Lparam[j][s]))/(Lparam[j][s+1]-Lparam[j][s]))] +
+                [-(self.NLfunc[j](Lparam[j][s]) - Lparam[j][s]*((self.NLfunc[j](
+                    Lparam[j][s+1]) - self.NLfunc[j](Lparam[j][s]))/(Lparam[j][s+1]-Lparam[j][s])))]
+            )],
+            senses=['E'],
+            rhs=[0])
+         for j, s in setSConcave]
+
+        # (13)
+        for j in setVars:
+            if (Ineq[j] == 1):
+                newsense = 'L'
+            else:
+                newsense = 'G'
+            cpx.linear_constraints.add(
+                lin_expr=[cplex.SparsePair(
+                    [varY[j]] + [z_ref[j][s] for s in setS[j]],
+                    [1] + [-1]*len(setS[j]))],
+                senses=[newsense],
+                rhs=[0])
+
+        # Creating Cuts
+        nz_ref = {}
+
+        # Clone variables
+        for j, s in setSConvex:
+            nz_ref[(j, s)] = cpx.variables.add(obj=[0],
+                                               lb=[-cplex.infinity],
+                                               ub=[cplex.infinity],
+                                               types=['C'],
+                                               names=['nz_ref(%d)(%d)' % (j+1, s+1)])[0]
+
+        self.nz_ref = nz_ref
+
+        # Clone variables constraints
+        [cpx.linear_constraints.add(
+            lin_expr=[cplex.SparsePair(
+                [z_ref[j][s]] + [nz_ref[(j, s)]] + [y_ref[j][s]],
+                [1] + [1] + [self.NLfunc[j](0.00)])],
+            senses=['E'],
+            rhs=[0])
+         for j, s in setSConvex]
+
+        # Add initial constraints
+        for j, s in setSConvex:
+            for newValue in [Lparam[j][s]]+[Lparam[j][s+1]]:
+                Lparamn = Lparam[j][s]
+                Lparamn = 0
+                if (Ineq[j] == 1):
+                    newsense = 'G'
+                else:
+                    newsense = 'L'
+                newrhs = 0
+                valx = -self.NLfuncDiff[j](newValue+Lparamn)
+                valy = -(self.NLfunc[j](newValue+Lparamn) - self.NLfunc[j]
+                         (0+Lparamn) - self.NLfuncDiff[j](newValue+Lparamn)*newValue)
+                cpx.linear_constraints.add(
+                    lin_expr=[cplex.SparsePair(
+                        [nz_ref[(j, s)]] + [x_ref[j][s]] + [y_ref[j][s]],
+                        [1] + [valx] + [valy])],
+                    senses=[newsense],
+                    rhs=[newrhs])
+
+        # Lparam
+        # Mode: 1 Incremental, 2 Multiple choice
+        self.lParamMode = [
+            [0 for s in range(len(self.Lparam[j]))] for j in setVars]
+        self.lParamFunc = [[self.NLfunc[j](0) for s in range(
+            len(self.Lparam[j]))] for j in setVars]
+
 
     def PrintProblem(self):
         lp = self.cpx.write_as_string("lp")
